@@ -1,0 +1,316 @@
+package edu.nwnu.eia.cipher;
+
+import edu.nwnu.eia.entity.Organization;
+import edu.nwnu.eia.entity.People;
+import edu.nwnu.eia.utils.CodeChange;
+import edu.nwnu.eia.utils.PropertiesRW;
+import it.unisa.dia.gas.jpbc.Element;
+import it.unisa.dia.gas.jpbc.Field;
+import it.unisa.dia.gas.jpbc.Pairing;
+import it.unisa.dia.gas.plaf.jpbc.pairing.PairingFactory;
+
+import java.math.BigInteger;
+import java.util.Base64;
+
+public class CertificatelessSignature {
+
+    public static void main(String[] args) {
+        CertificatelessSignature CL = new CertificatelessSignature();
+        //CL.setup();
+        //CL.setupOrg();
+
+        //初始化参数
+        Pairing pb = PairingFactory.getPairing("src/main/resources/config/a.properties");
+        Field Zr = pb.getZr();
+        Field G1 = pb.getG1();
+
+        //生成机构
+        Organization org = new Organization();
+        CL.setupOrg(org);
+
+        //生成用户
+        People people = new People();
+        people.setK(Zr.newRandomElement());
+        //获取秘密值
+        Element s = people.getK();
+        //生成匿名
+        String anonymous = CL.GenerateAnonymous("412826199811154633",org);
+        people.setAnonymous(anonymous);
+        System.out.println("生成匿名......");
+        System.out.println("anonymous = "+anonymous);
+
+        //匿名追踪：获取真实身份
+        System.out.println("追踪匿名，生成真实身份......");
+        String id  = CL.track(anonymous,org);
+        System.out.println("ID = "+id);
+
+        //用户部分私钥生成
+        String path = "src/main/resources/config/cipher.properties";
+        PropertiesRW propertiesRW = new PropertiesRW();
+        Element g = Zr.newElementFromBytes(CodeChange.stringToBytes(propertiesRW.Read("g",path))).getImmutable();
+        Element s_i1 = Zr.newElementFromBytes(CodeChange.stringToBytes(org.getSi1()));
+        Element s_i2 = Zr.newElementFromBytes(CodeChange.stringToBytes(org.getSi2()));
+        Element Kid = G1.newElementFromBytes(CodeChange.stringToBytes(org.getKid()));
+        Element PKi1 = G1.newElementFromBytes(CodeChange.stringToBytes(org.getPKi1()));
+        System.out.println(g);
+        Element PKi2 = G1.newElementFromBytes(CodeChange.stringToBytes(org.getPKi2()));
+        Element gk = Zr.newOneElement().div(g.powZn(s));
+        CL.partKeyGen(people,gk,s_i1,s_i2);
+
+        //生成完整私钥
+        Element PID_ij = Zr.newElementFromBytes(CodeChange.stringToBytes(anonymous)).getImmutable();
+        CL.signKeyOfUser(people,PID_ij, people.getR1(),people.getU1());
+
+
+        String m = "这是测试我的签名";
+        String m2 = "这个明文很长很长，这个明文很长很长，这个明文很长很长，这个明文很长很长，这个明文很长很长，这个明文很长很长，这个明文很长很长。";
+        Element mb = G1.newElementFromBytes(m.getBytes());
+        Element mysig = CL.sign(mb,people);
+
+        System.out.println(CL.ver(mb,people,mysig,PKi1,PKi2));
+        System.out.println(CodeChange.bytesToString(Kid.toBytes()));
+    }
+
+
+
+    //G1 -> Zr
+    public static Element H1(Element arg, Field Zr){
+        return Zr.newElement(new BigInteger(arg.toBytes()));
+    }
+
+    //(Zr,Zr,G1) -> Zr
+    public static Element H2(Element PID_ij, Element Rij2, Field Zr){
+        String s2 = Rij2.mulZn(PID_ij).toString();
+        return Zr.newElementFromBytes(s2.getBytes());
+    }
+
+    //(Zr,Zr,G1) -> Zr
+    public static Element H3(Element PID_ij, Element Uij2, Field Zr){
+        String s1 = PID_ij.toString();
+        String s2 = Uij2.toString();
+        String s3 = s1+s2;
+        return Zr.newElement(new BigInteger(s3.getBytes()));
+    }
+
+    public static Element  H4(Element ciphertext, Element PID_ij, Element Rij2, Element Uij2, Field Zr){
+        String s1 = ciphertext.toString();
+        String s2 = PID_ij.toString();
+        String s3 = Rij2.toString();
+        String s4 = Uij2.toString();
+        String s5 = s1+s2+s3+s4;
+        return Zr.newElement(new BigInteger(s5.getBytes()));
+    }
+
+
+    /**
+     * 仅运行一次
+     * 系统初始化，生成公共参数 { P, g, CSK, CPK }
+     */
+    public void setup(){
+        Pairing pb = PairingFactory.getPairing("src/main/resources/config/a.properties");
+        PropertiesRW propertiesRW = new PropertiesRW();
+
+        Field Zr = pb.getZr();
+        Field G1 = pb.getG1();
+
+        Element P = G1.newRandomElement().getImmutable();
+        Element g = Zr.newRandomElement().getImmutable();
+        Element CSK = Zr.newRandomElement().getImmutable();
+        Element CPK = Zr.newRandomElement().getImmutable();
+
+
+        String PStr = CodeChange.bytesToString(P.toBytes());
+        String gStr = CodeChange.bytesToString(g.toBytes());
+        //
+        String CSKStr = CodeChange.bytesToString(CSK.toBytes());
+        String CPKStr = CodeChange.bytesToString(CPK.toBytes());
+
+        String path = "src/main/resources/config/cipher.properties";
+        propertiesRW.Write("P",PStr,path);
+        propertiesRW.Write("g",gStr,path);
+        propertiesRW.Write("CSKStr",CSKStr, path);
+        propertiesRW.Write("CPKStr", CPKStr,path);
+
+    }
+
+
+    /**
+     * 在机构进行注册时使用
+     * 生成机构的私钥，公钥，匿名生成密钥
+     * @return
+     */
+    public Organization setupOrg(Organization o){
+        Pairing pb = PairingFactory.getPairing("src/main/resources/config/a.properties");
+        String path = "src/main/resources/config/cipher.properties";
+        PropertiesRW propertiesRW = new PropertiesRW();
+
+        Field Zr = pb.getZr();
+        Field G1 = pb.getG1();
+
+        // 随机选取私si1 si2
+        Element si1 = Zr.newRandomElement().getImmutable();
+        Element si2 = Zr.newRandomElement().getImmutable();
+        Element P = G1.newElementFromBytes(CodeChange.stringToBytes(propertiesRW.Read("P",path))).getImmutable();
+        Element g = Zr.newElementFromBytes(CodeChange.stringToBytes(propertiesRW.Read("g",path))).getImmutable();
+        Element Kid = P.mulZn(si1).getImmutable();
+        Element PKi1 = P.mulZn(g.powZn(si1)).getImmutable();
+        Element PKi2 = P.mulZn(g.powZn(si2)).getImmutable();
+        Element rij = Zr.newRandomElement().getImmutable();
+        Element uij = Zr.newRandomElement().getImmutable();
+
+        // 将si1和si2的byte[]转成字符串
+        String si1Str = CodeChange.bytesToString(si1.toBytes());
+        String si2Str = CodeChange.bytesToString(si2.toBytes());
+        String KidStr = CodeChange.bytesToString(Kid.toBytes());
+        String PKi1Str = CodeChange.bytesToString(PKi1.toBytes());
+        String PKi2Str = CodeChange.bytesToString(PKi2.toBytes());
+
+        //存储到organization中
+        o.setSi1(si1Str);
+        o.setSi2(si2Str);
+        o.setKid(KidStr);
+        o.setPKi1(PKi1Str);
+        o.setPKi2(PKi2Str);
+        o.setRij(rij);
+        o.setUij(uij);
+
+        return o;
+    }
+
+    /**
+     * 根据用户输入的身份证号，输出用户的匿名身份
+     * @param ID 用户身份证号 H(rij*Kid)
+     * @return String 为用户的匿名
+     */
+    public String GenerateAnonymous(String ID, Organization org){
+        Pairing pb = PairingFactory.getPairing("src/main/resources/config/a.properties");
+        Field Zr = pb.getZr();
+        Field G1 = pb.getG1();
+        String anonymous = null;
+        BigInteger B = new BigInteger(ID);
+        Element Kid = G1.newElementFromBytes(CodeChange.stringToBytes(org.getKid())).getImmutable();
+        BigInteger H = CertificatelessSignature.H1(Kid.mulZn(org.getRij()),Zr).toBigInteger();
+        //System.out.println("H = "+H);
+        BigInteger result = B.xor(H);
+        anonymous = Base64.getEncoder().encodeToString(Zr.newElement(result).toBytes());
+        return anonymous;
+    }
+
+    /**
+     * 根据用户匿名，追踪用户的真实身份
+     * @param anonymous 用户的匿名
+     * @return 用户的真实身份
+     */
+    public String track(String anonymous,  Organization org){
+        Pairing pb = PairingFactory.getPairing("src/main/resources/config/a.properties");
+        Field Zr = pb.getZr();
+        Field G1 = pb.getG1();
+        PropertiesRW prw = new PropertiesRW();
+        String path = "src/main/resources/config/cipher.properties";
+        String p = prw.Read("P",path);
+        Element P = G1.newElementFromBytes( CodeChange.stringToBytes(p)).getImmutable();
+        byte[] b = Base64.getDecoder().decode(anonymous);
+        BigInteger result = Zr.newElementFromBytes(b).getImmutable().toBigInteger();
+        Element si1 = Zr.newElementFromBytes(CodeChange.stringToBytes(org.getSi1())).getImmutable();
+        Element rij = org.getRij().getImmutable();
+        BigInteger H = CertificatelessSignature.H1(P.mulZn(rij).mulZn(si1).getImmutable(),Zr).toBigInteger();
+        //System.out.println("H = "+H);
+        BigInteger B = result.xor(H);
+        return B.toString();
+    }
+
+    /**
+     * 用户部分私钥生成
+     */
+    public void partKeyGen(People people, Element gk, Element s_i1, Element s_i2){
+        Pairing pb = PairingFactory.getPairing("src/main/resources/config/a.properties");
+        Field Zr = pb.getZr();
+        Field G1 = pb.getG1();
+
+        Element rij = Zr.newRandomElement().getImmutable();
+        Element uij = Zr.newRandomElement().getImmutable();
+        PropertiesRW prw = new PropertiesRW();
+        String path = "src/main/resources/config/cipher.properties";
+        String p = prw.Read("P",path);
+        byte[] b = CodeChange.stringToBytes(p);
+        Element P = G1.newElementFromBytes(b).getImmutable();
+        Element g = Zr.newElementFromBytes(CodeChange.stringToBytes(prw.Read("g",path))).getImmutable();
+        Element Rij1 = P.mulZn(rij).getImmutable();
+        Element Uij1 = P.mulZn(uij).getImmutable();
+
+        //部分公钥
+        people.setR1(Rij1);
+        people.setU1(Uij1);
+
+        //部分私钥
+        people.setSKi1(g.powZn(s_i1).mulZn(gk).add(rij).getImmutable());
+        people.setSKi2(g.powZn(s_i2).mulZn(gk).add(uij).getImmutable());
+    }
+
+    /**
+     * 生成用户签名钥
+     * @param PID_ij
+     * @param Rij1
+     * @param Uij1
+     */
+    public void signKeyOfUser(People people, Element PID_ij, Element Rij1, Element Uij1 ){
+        Pairing pb = PairingFactory.getPairing("src/main/resources/config/a.properties");
+        Field Zr = pb.getZr();
+        String path = "src/main/resources/config/cipher.properties";
+        PropertiesRW propertiesRW = new PropertiesRW();
+        Element g = Zr.newElementFromBytes(CodeChange.stringToBytes(propertiesRW.Read("g",path))).getImmutable();
+        Element gk = g.powZn(people.getK());
+        Element Rij2 = Rij1.mulZn(gk).getImmutable();
+        Element Uij2 = Uij1.mulZn(gk).getImmutable();
+        people.setR2(Rij2);
+        people.setU2(Uij2);
+
+        Element h_rij = H2(PID_ij, Rij2, Zr).getImmutable();
+        Element h_uij = H3(PID_ij, Uij2, Zr).getImmutable();
+        Element SK_i1 = people.getSKi1();
+        Element SK_i2 = people.getSKi2();
+        people.setSKi1(SK_i1.mulZn(gk).mulZn(h_rij).getImmutable());
+        people.setSKi2(SK_i2.mulZn(gk).mulZn(h_uij).getImmutable());
+    }
+
+    //生成签名
+    public Element sign(Element ciphertext, People people){
+        Pairing pb = PairingFactory.getPairing("src/main/resources/config/a.properties");
+        Field Zr = pb.getZr();
+        Element PID_ij = Zr.newElementFromBytes(Base64.getDecoder().decode(people.getAnonymous()));
+        Element Rij2 = people.getR2();
+        Element Uij2 = people.getU2();
+        Element hij = H4(ciphertext,PID_ij,Rij2,Uij2,Zr).getImmutable();
+        Element Sk1_ij = people.getSKi1();
+        Element Sk2_ij = people.getSKi2();
+        return Sk1_ij.add(Sk2_ij.mulZn(hij)).getImmutable();
+    }
+
+    //验证签名
+    public boolean ver(Element ciphertext, People people, Element sign, Element PK_i1, Element PK_i2){
+        Pairing pb = PairingFactory.getPairing("src/main/resources/config/a.properties");
+        Field Zr = pb.getZr();
+        Field G1 = pb.getG1();
+
+        Element PID_ij = Zr.newElementFromBytes(Base64.getDecoder().decode(people.getAnonymous()));
+
+        Element Rij2 = people.getR2();
+        Element Uij2 = people.getU2();
+
+        Element hrij = H2(PID_ij,Rij2,Zr).getImmutable();
+        Element huij = H3(PID_ij,Uij2,Zr).getImmutable();
+        Element hij = H4(ciphertext,PID_ij,Rij2,Uij2,Zr).getImmutable();
+        PropertiesRW prw = new PropertiesRW();
+        String path = "src/main/resources/config/cipher.properties";
+        String p = prw.Read("P",path);
+        byte[] b = CodeChange.stringToBytes(p);
+        Element P = G1.newElementFromBytes(b).getImmutable();
+        Element s1 = P.mulZn(sign);
+        Element s2 = PK_i1.mulZn(hrij).add(Rij2.mulZn(hrij)).add(PK_i2.mulZn(hij.mulZn(huij))).add(Uij2.mulZn(hij.mulZn(huij)));
+        if(s1.equals(s2)){
+            return true;
+        }else{
+            return false;
+        }
+    }
+}
